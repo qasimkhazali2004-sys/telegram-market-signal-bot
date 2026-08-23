@@ -81,7 +81,12 @@ class Database:
     def update_status(self, setup_id: str, status: str):
         self.conn.execute("UPDATE signals SET status=? WHERE setup_id=?", (status, setup_id))
         self.conn.commit()
-
+def update_stop(self, setup_id: str, stop_loss: float):
+    self.conn.execute(
+        "UPDATE signals SET stop_loss=? WHERE setup_id=?",
+        (stop_loss, setup_id),
+    )
+    self.conn.commit()
     def result(self, setup_id: str, result: str, r_multiple: float, duration_minutes: float):
         self.conn.execute(
             "UPDATE signals SET result=?,r_multiple=?,duration_minutes=?,status='CLOSED' WHERE setup_id=?",
