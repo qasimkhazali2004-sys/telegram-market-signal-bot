@@ -35,31 +35,31 @@ class TwelveDataProvider:
         params = {**params, "apikey": self.api_key}
         timeout = aiohttp.ClientTimeout(total=20)
 
-    await self._request_lock.acquire()
-    try:
-        await asyncio.sleep(8)
-
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(
-                f"{self.base_url}/{endpoint}",
-                params=params,
-            ) as r:
-                data = await r.json()
-
-                if r.status == 429:
-                    raise RuntimeError(
-                        "Provider rate limit reached (HTTP 429). "
-                        "Wait for the next minute before retrying."
-                    )
-
-                if r.status >= 400:
-                    raise RuntimeError(
-                        f"Provider HTTP {r.status}: {data}"
-                    )
-
-                return data
-    finally:
-        self._request_lock.release()
+        await self._request_lock.acquire()
+        try:
+            await asyncio.sleep(8)
+    
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    f"{self.base_url}/{endpoint}",
+                    params=params,
+                ) as r:
+                    data = await r.json()
+    
+                    if r.status == 429:
+                        raise RuntimeError(
+                            "Provider rate limit reached (HTTP 429). "
+                            "Wait for the next minute before retrying."
+                        )
+    
+                    if r.status >= 400:
+                        raise RuntimeError(
+                            f"Provider HTTP {r.status}: {data}"
+                        )
+    
+                    return data
+        finally:
+            self._request_lock.release()
 
     async def candles(self, symbol: str, interval: str, limit: int = 300) -> pd.DataFrame:
         data = await self._get("time_series", {
