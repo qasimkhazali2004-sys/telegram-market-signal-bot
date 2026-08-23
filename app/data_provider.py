@@ -59,11 +59,26 @@ class TwelveDataProvider:
         return df.sort_values("datetime").reset_index(drop=True)
 
     async def snapshot(self, symbol: str) -> Snapshot:
-        data = await self._get("quote", {"symbol": self.MAP[symbol]})
-        return Snapshot(
-            symbol=symbol,
-            last=float(data["close"]),
-            bid=float(data["bid"]) if data.get("bid") else None,
-            ask=float(data["ask"]) if data.get("ask") else None,
-            timestamp=datetime.now(timezone.utc),
+    data = await self._get("quote", {"symbol": self.MAP[symbol]})
+
+    raw_timestamp = data.get("timestamp")
+    if raw_timestamp:
+        quote_timestamp = datetime.fromtimestamp(
+            int(raw_timestamp),
+            tz=timezone.utc,
         )
+    elif data.get("datetime"):
+        quote_timestamp = pd.to_datetime(
+            data["datetime"],
+            utc=True,
+        ).to_pydatetime()
+    else:
+        raise RuntimeError(f"لا يوجد وقت موثوق للسعر: {symbol}")
+
+    return Snapshot(
+        symbol=symbol,
+        last=float(data["close"]),
+        bid=float(data["bid"]) if data.get("bid") else None,
+        ask=float(data["ask"]) if data.get("ask") else None,
+        timestamp=quote_timestamp,
+    )
