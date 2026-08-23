@@ -64,7 +64,7 @@ class TwelveDataProvider:
             {"symbol": self.MAP[symbol]},
         )
 
-        raw_timestamp = data.get("timestamp")
+        raw_timestamp = data.get("last_quote_at") or data.get("timestamp")
 
         if raw_timestamp:
             quote_timestamp = datetime.fromtimestamp(
@@ -78,7 +78,6 @@ class TwelveDataProvider:
             ).to_pydatetime()
         else:
             raise RuntimeError(f"لا يوجد وقت موثوق للسعر: {symbol}")
-
         return Snapshot(
             symbol=symbol,
             last=float(data["close"]),
