@@ -32,7 +32,10 @@ class SignalEngine:
 
         tf = self.s.timeframes["scalping" if style == Style.SCALPING else "intraday"].split(",")
 
-        symbols = [selected_symbol] if selected_symbol in SYMBOL_PRIORITY else list(SYMBOL_PRIORITY)
+        if selected_symbol in SYMBOL_PRIORITY:
+            symbols = [selected_symbol]
+        else:
+            symbols = [SYMBOL_PRIORITY[0]]
 
         for symbol in symbols:
             try:
