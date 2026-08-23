@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import hashlib
+from datetime import datetime, timezone
 from app.config import Settings, SYMBOL_PRIORITY
 from app.data_provider import TwelveDataProvider
 from app.database import Database
@@ -36,12 +37,28 @@ class SignalEngine:
         for symbol in symbols:
             try:
                 snap = await self.provider.snapshot(symbol)
+
+                quote_age = (
+                    datetime.now(timezone.utc) - snap.timestamp
+                ).total_seconds()
+        
+                max_quote_age = 900 if style == Style.INTRADAY else 300
+        
+                if quote_age > max_quote_age:
+                    log.info(
+                        "market closed/stale quote for %s: %.0fs old",
+                        symbol,
+                        quote_age,
+                    )
+                    continue
+        
                 news = await self.news.status(symbol, self.s.news_block_minutes)
                 if news.blocked:
                     continue
+        
                 frames = await asyncio.gather(
-                    *(self.provider.candles(symbol, x, 300) for x in tf)
-                )
+                *(self.provider.candles(symbol, x, 300) for x in tf)
+        )
                 signal = analyze(
                     symbol, frames[0], frames[1], frames[2], style,
                     self.s.min_confidence, self.s.risk_per_trade,
