@@ -32,8 +32,8 @@ class TwelveDataProvider:
         self._request_lock = asyncio.Lock()
 
     async def _get(self, endpoint: str, params: dict) -> dict:
-    params = {**params, "apikey": self.api_key}
-    timeout = aiohttp.ClientTimeout(total=20)
+        params = {**params, "apikey": self.api_key}
+        timeout = aiohttp.ClientTimeout(total=20)
 
     await self._request_lock.acquire()
     try:
