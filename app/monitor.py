@@ -19,17 +19,17 @@ class PositionMonitor:
     async def check(self, item: dict) -> MonitorEvent | None:
                 snap = await self.provider.snapshot(item["symbol"])
 
-            price = snap.last
-            entry = float(item["entry"])
-            stop = float(item["stop_loss"])
-            tp1 = float(item["tp1"])
-            tp2 = float(item["tp2"])
-            tp3 = float(item["tp3"]) if item["tp3"] is not None else None
-        
-            direction = item["direction"]
-            status = item["status"]
-            setup_id = item["setup_id"]
-        
+                price = snap.last
+                entry = float(item["entry"])
+                stop = float(item["stop_loss"])
+                tp1 = float(item["tp1"])
+                tp2 = float(item["tp2"])
+                tp3 = float(item["tp3"]) if item["tp3"] is not None else None
+            
+                direction = item["direction"]
+                status = item["status"]
+                setup_id = item["setup_id"]
+            
         # Entry activation
         if status == "WAITING_ENTRY":
             if direction == Direction.BUY.value and price >= entry:
