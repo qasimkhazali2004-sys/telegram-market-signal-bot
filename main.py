@@ -1,4 +1,4 @@
-    import os
+import os
 import asyncio
 import logging
 import aiohttp
@@ -8,6 +8,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("market-bot")
@@ -89,17 +90,8 @@ def build_signal(symbol, htf, mtf, ltf, scalping):
     m = mtf.iloc[-1]
     l = ltf.iloc[-1]
 
-    bullish = (
-        h.ema20 > h.ema50 > h.ema200
-        and m.ema20 > m.ema50
-        and l.rsi >= 52
-    )
-    bearish = (
-        h.ema20 < h.ema50 < h.ema200
-        and m.ema20 < m.ema50
-        and l.rsi <= 48
-    )
-
+    bullish = h.ema20 > h.ema50 > h.ema200 and m.ema20 > m.ema50 and l.rsi >= 52
+    bearish = h.ema20 < h.ema50 < h.ema200 and m.ema20 < m.ema50 and l.rsi <= 48
     if not (bullish or bearish):
         return None
 
@@ -115,15 +107,14 @@ def build_signal(symbol, htf, mtf, ltf, scalping):
     if direction == "BUY":
         stop = min(recent_low - 0.15 * atr_value, entry - 1.5 * atr_value)
         risk = entry - stop
-        tp1 = entry + 1.2 * risk
-        tp2 = entry + 2.0 * risk
-        tp3 = entry + 3.0 * risk
+        tp1, tp2, tp3 = entry + 1.2 * risk, entry + 2.0 * risk, entry + 3.0 * risk
     else:
         stop = max(recent_high + 0.15 * atr_value, entry + 1.5 * atr_value)
         risk = stop - entry
-        tp1 = entry - 1.2 * risk
-        tp2 = entry - 2.0 * risk
-        tp3 = entry - 3.0 * risk
+        tp1, tp2, tp3 = entry - 1.2 * risk, entry - 2.0 * risk, entry - 3.0 * risk
+
+    if risk <= 0:
+        return None
 
     confidence = 85 if (
         (direction == "BUY" and l.rsi >= 55)
@@ -133,6 +124,7 @@ def build_signal(symbol, htf, mtf, ltf, scalping):
     if confidence < MIN_CONFIDENCE:
         return None
 
+    rr = abs(tp2 - entry) / risk
     return {
         "symbol": symbol,
         "direction": direction,
@@ -141,6 +133,7 @@ def build_signal(symbol, htf, mtf, ltf, scalping):
         "tp1": tp1,
         "tp2": tp2,
         "tp3": tp3,
+        "rr": rr,
         "confidence": confidence,
         "style": "سكالبينج" if scalping else "تداول يومي",
         "timeframe": "15m / 5m / 1m" if scalping else "1h / 15m / 5m",
@@ -153,7 +146,6 @@ def price(value):
 
 def render(signal):
     direction_ar = "شراء" if signal["direction"] == "BUY" else "بيع"
-
     return (
         "🚨 <b>إشارة تداول</b>\n\n"
         f"📊 الأصل: <b>{signal['symbol']}</b>\n"
@@ -164,7 +156,7 @@ def render(signal):
         f"✅ الهدف 1: <b>{price(signal['tp1'])}</b>\n"
         f"✅ الهدف 2: <b>{price(signal['tp2'])}</b>\n"
         f"✅ الهدف 3: <b>{price(signal['tp3'])}</b>\n\n"
-        "📐 العائد مقابل المخاطرة: <b>1:2.00</b>\n"
+        f"📐 العائد مقابل المخاطرة: <b>1:{signal['rr']:.2f}</b>\n"
         f"🔥 درجة الثقة: <b>{signal['confidence']}/100</b>\n"
         f"📊 الاتجاه العام: <b>{signal['market']}</b>\n"
         f"⏱ المدة المتوقعة: <b>{signal['duration']}</b>\n"
@@ -178,11 +170,7 @@ def render(signal):
     )
 
 async def scan(scalping=False):
-    intervals = (
-        ("15min", "5min", "1min")
-        if scalping
-        else ("1h", "15min", "5min")
-    )
+    intervals = ("15min", "5min", "1min") if scalping else ("1h", "15min", "5min")
 
     for display_symbol, provider_symbol in SYMBOLS:
         try:
@@ -191,22 +179,17 @@ async def scan(scalping=False):
                 candles(provider_symbol, intervals[1]),
                 candles(provider_symbol, intervals[2]),
             )
-            signal = build_signal(
-                display_symbol, htf, mtf, ltf, scalping
-            )
+            signal = build_signal(display_symbol, htf, mtf, ltf, scalping)
             if signal:
                 return render(signal)
         except Exception:
             log.exception("فشل تحليل %s", display_symbol)
 
-    if scalping:
-        return (
-            "🟡 <b>لا توجد صفقة سكالبينج</b>\n\n"
-            "لا توجد فرصة قصيرة المدى تستوفي الشروط حالياً.\n"
-            "القرار: <b>NO TRADE</b>."
-        )
-
     return (
+        "🟡 <b>لا توجد صفقة سكالبينج</b>\n\n"
+        "لا توجد فرصة قصيرة المدى تستوفي الشروط حالياً.\n"
+        "القرار: <b>NO TRADE</b>."
+        if scalping else
         "🟡 <b>لا توجد صفقة</b>\n\n"
         "السوق غير واضح حالياً أو شروط الدخول غير مكتملة.\n"
         "القرار: <b>NO TRADE</b>."
@@ -218,7 +201,10 @@ async def main():
     if not TWELVE_KEY:
         raise RuntimeError("المتغير TWELVE_DATA_API_KEY غير موجود")
 
-    bot = Bot(BOT_TOKEN, parse_mode=ParseMode.HTML)
+    bot = Bot(
+        BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     dp = Dispatcher()
 
     @dp.message(Command("start"))
@@ -232,18 +218,12 @@ async def main():
 
     @dp.callback_query(F.data == "trade")
     async def trade(callback: CallbackQuery):
-        await callback.message.edit_text(
-            await scan(False),
-            reply_markup=keyboard(),
-        )
+        await callback.message.edit_text(await scan(False), reply_markup=keyboard())
         await callback.answer()
 
     @dp.callback_query(F.data == "scalp")
     async def scalp(callback: CallbackQuery):
-        await callback.message.edit_text(
-            await scan(True),
-            reply_markup=keyboard(),
-        )
+        await callback.message.edit_text(await scan(True), reply_markup=keyboard())
         await callback.answer()
 
     await dp.start_polling(bot)
