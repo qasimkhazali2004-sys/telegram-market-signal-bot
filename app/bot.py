@@ -20,6 +20,39 @@ def keyboard():
     ])
 
 def asset_keyboard(mode: str):
+    def timeframe_keyboard(mode: str, symbol: str):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="1 دقيقة",
+                callback_data=f"{mode}_tf:{symbol}:1min",
+            ),
+            InlineKeyboardButton(
+                text="5 دقائق",
+                callback_data=f"{mode}_tf:{symbol}:5min",
+            ),
+            InlineKeyboardButton(
+                text="15 دقيقة",
+                callback_data=f"{mode}_tf:{symbol}:15min",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="1 ساعة",
+                callback_data=f"{mode}_tf:{symbol}:1h",
+            ),
+            InlineKeyboardButton(
+                text="4 ساعات",
+                callback_data=f"{mode}_tf:{symbol}:4h",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="↩️ رجوع",
+                callback_data="home",
+            )
+        ],
+    ])
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🥇 الذهب — XAUUSD", callback_data=f"{mode}:XAUUSD")],
         [InlineKeyboardButton(text="₿ بيتكوين — BTCUSDT", callback_data=f"{mode}:BTCUSDT")],
@@ -52,34 +85,54 @@ class TelegramApp:
                 reply_markup=keyboard()
             )
 
-        @self.dp.callback_query(F.data == "trade_menu")
-        async def trade_menu(q: CallbackQuery):
-            await q.message.edit_text(
-                "📊 <b>صفقة أو توصية</b>\n\nاختر الأصل الذي تريد تحليله:",
-                reply_markup=asset_keyboard("trade")
-            )
-            await q.answer()
+        @self.dp.callback_query(F.data.startswith("trade_tf:"))
+async def trade_timeframe(q: CallbackQuery):
+    _, symbol, timeframe = q.data.split(":", 2)
 
-        @self.dp.callback_query(F.data == "scalp_menu")
-        async def scalp_menu(q: CallbackQuery):
-            await q.message.edit_text(
-                "⚡ <b>سكالبينج</b>\n\nاختر الأصل الذي تريد تحليله:",
-                reply_markup=asset_keyboard("scalp")
-            )
-            await q.answer()
+    await q.message.edit_text(
+        "⏳ جاري تحليل السوق...",
+    )
+
+    text = await self.engine.scan(
+        Style.INTRADAY,
+        selected_symbol=symbol,
+        timeframe=timeframe,
+    )
+
+    await q.message.edit_text(
+        text,
+        reply_markup=keyboard(),
+    )
+    await q.answer()
+
+        @self.dp.callback_query(F.data.startswith("scalp_tf:"))
+async def scalp_timeframe(q: CallbackQuery):
+    _, symbol, timeframe = q.data.split(":", 2)
+
+    await q.message.edit_text(
+        "⏳ جاري تحليل السوق...",
+    )
+
+    text = await self.engine.scan(
+        Style.SCALPING,
+        selected_symbol=symbol,
+        timeframe=timeframe,
+    )
+
+    await q.message.edit_text(
+        text,
+        reply_markup=keyboard(),
+    )
+    await q.answer()
 
         @self.dp.callback_query(F.data.startswith("trade:"))
         async def trade_asset(q: CallbackQuery):
             symbol = q.data.split(":", 1)[1]
             await q.message.edit_text(
-                "⏳ جاري تحليل الأصل المختار فقط...",
-                reply_markup=asset_keyboard("trade")
-            )
-            await q.message.edit_text(
-                await self.engine.scan(Style.INTRADAY, selected_symbol=symbol),
-                reply_markup=keyboard()
-            )
-            await q.answer()
+    f"📊 الأصل: {symbol}\n\nاختر الفريم الذي تريد التحليل عليه:",
+    reply_markup=timeframe_keyboard("trade", symbol),
+)
+await q.answer()
 
         @self.dp.callback_query(F.data.startswith("scalp:"))
         async def scalp_asset(q: CallbackQuery):
@@ -89,10 +142,10 @@ class TelegramApp:
                 reply_markup=asset_keyboard("scalp")
             )
             await q.message.edit_text(
-                await self.engine.scan(Style.SCALPING, selected_symbol=symbol),
-                reply_markup=keyboard()
-            )
-            await q.answer()
+    f"⚡ سكالبينج — {symbol}\n\nاختر الفريم الذي تريد التحليل عليه:",
+    reply_markup=timeframe_keyboard("scalp", symbol),
+)
+await q.answer()
 
         @self.dp.callback_query(F.data == "home")
         async def home(q: CallbackQuery):
