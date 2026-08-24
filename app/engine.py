@@ -110,7 +110,7 @@ class SignalEngine:
                     continue
 
                 frames = await asyncio.gather(
-                    *(self.provider.candles(symbol, interval, 300) for interval in tf)
+                    *(self.provider.candles(symbol, interval, 220) for interval in tf)
                 )
 
                 signal = analyze(
