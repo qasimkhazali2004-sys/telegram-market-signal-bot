@@ -251,25 +251,6 @@ class TelegramApp:
             self.s.min_confidence = v
             await msg.answer(f"تم تحديث الحد الأدنى إلى {v}/100.")
 
-        @self.dp.message(Command("maxtrades"))
-        async def maxtrades(msg: Message):
-            if not self._is_admin(msg):
-                return await msg.answer("هذا الأمر للمشرف فقط.")
-
-            parts = msg.text.split()
-            if len(parts) != 2:
-                return await msg.answer(
-                    f"الحد اليومي الحالي: {self.s.max_daily_trades}\n"
-                    "استخدم: /maxtrades 5"
-                )
-
-            v = int(parts[1])
-            if v < 1:
-                return await msg.answer("يجب أن يكون الحد أكبر من صفر.")
-
-            self.s.max_daily_trades = v
-            await msg.answer(f"تم تحديث الحد اليومي إلى {v}.")
-
         @self.dp.message(Command("risk"))
         async def risk(msg: Message):
             if not self._is_admin(msg):
@@ -329,7 +310,6 @@ class TelegramApp:
                 f"الأصول: {', '.join(SYMBOL_PRIORITY)}\n"
                 f"Confidence: {self.s.min_confidence}/100\n"
                 f"Risk: {self.s.risk_per_trade * 100:.2f}%\n"
-                f"الحد اليومي: {self.s.max_daily_trades}\n"
                 f"فلتر الأخبار: {'مفعل' if self.s.news_filter_enabled else 'معطل'}"
             )
 
