@@ -172,16 +172,16 @@ class TelegramApp:
     reply_markup=timeframe_keyboard("scalp", symbol),
 )
 await q.answer()
-        @self.dp.callback_query(F.data == "home")
-        async def home(q: CallbackQuery):
+    @self.dp.callback_query(F.data == "home")
+    async def home(q: CallbackQuery):
                 await q.message.edit_text(
                     "اختر نوع التحليل:",
                     reply_markup=keyboard()
                 )
                 await q.answer()
     
-        @self.dp.callback_query(F.data == "metrics")
-        async def metrics(q: CallbackQuery):
+    @self.dp.callback_query(F.data == "metrics")
+    async def metrics(q: CallbackQuery):
                 if q.from_user.id not in self.s.admin_ids:
                     await q.answer("هذا الخيار للمشرف فقط.", show_alert=True)
                     return
