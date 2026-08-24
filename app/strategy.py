@@ -80,7 +80,7 @@ def analyze(
         direction == Direction.SELL and L["close"] < L["open"]
     )
 
-    entry = float(L["close"])
+    entry = float(ls["support"] if direction == Direction.BUY else ls["resistance"])
     atr_value = float(L["atr"])
     if atr_value <= 0:
         return None
