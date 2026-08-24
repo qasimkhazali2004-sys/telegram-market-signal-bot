@@ -16,7 +16,6 @@ class Settings:
     twelve_data_api_key: str
     min_confidence: int = 80
     risk_per_trade: float = 0.005
-    max_daily_trades: int = 5
     max_spread_pct: float = 0.0015
     max_signal_age_seconds: int = 30
     scan_seconds: int = 60
@@ -49,7 +48,6 @@ class Settings:
             twelve_data_api_key=os.getenv("TWELVE_DATA_API_KEY", ""),
             min_confidence=int(os.getenv("MIN_CONFIDENCE", "80")),
             risk_per_trade=float(os.getenv("RISK_PER_TRADE", "0.005")),
-            max_daily_trades=int(os.getenv("MAX_DAILY_TRADES", "5")),
             max_spread_pct=float(os.getenv("MAX_SPREAD_PCT", "0.0015")),
             max_signal_age_seconds=int(os.getenv("MAX_SIGNAL_AGE_SECONDS", "30")),
             scan_seconds=int(os.getenv("SCAN_SECONDS", "60")),
@@ -74,7 +72,5 @@ class Settings:
             raise ValueError("RISK_PER_TRADE يجب أن يكون بين >0 و1%")
         if not 0 <= self.min_confidence <= 100:
             raise ValueError("MIN_CONFIDENCE يجب أن يكون بين 0 و100")
-        if self.max_daily_trades < 1:
-            raise ValueError("MAX_DAILY_TRADES يجب أن يكون >= 1")
         if self.scan_seconds < 15:
             raise ValueError("SCAN_SECONDS يجب أن يكون >= 15")
