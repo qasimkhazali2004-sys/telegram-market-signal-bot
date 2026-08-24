@@ -172,29 +172,24 @@ class TelegramApp:
     reply_markup=timeframe_keyboard("scalp", symbol),
 )
 await q.answer()
-
-@self.dp.callback_query(F.data == "home")
+        @self.dp.callback_query(F.data == "home")
         async def home(q: CallbackQuery):
-            await q.message.edit_text(
-                "اختر نوع التحليل:",
-                reply_markup=keyboard()
-            )
-            await q.answer()
-
-@self.dp.callback_query(F.data == "metrics")
+                await q.message.edit_text(
+                    "اختر نوع التحليل:",
+                    reply_markup=keyboard()
+                )
+                await q.answer()
+    
+        @self.dp.callback_query(F.data == "metrics")
         async def metrics(q: CallbackQuery):
-            if q.from_user.id not in self.s.admin_ids:
-                await q.answer("هذا الخيار للمشرف فقط.", show_alert=True)
-                return
-            await q.message.edit_text(self.engine.metrics_text(), reply_markup=keyboard())
-            await q.answer()
-
-        @self.dp.message(Command("metrics"))
-        async def metrics_cmd(msg: Message):
-            if not self._is_admin(msg):
-                return await msg.answer("هذا الأمر للمشرف فقط.")
-            await msg.answer(self.engine.metrics_text())
-
+                if q.from_user.id not in self.s.admin_ids:
+                    await q.answer("هذا الخيار للمشرف فقط.", show_alert=True)
+                    return
+                await q.message.edit_text(
+                    self.engine.metrics_text(),
+                    reply_markup=keyboard()
+                )
+                
         @self.dp.message(Command("minconfidence"))
         async def minconfidence(msg: Message):
             if not self._is_admin(msg):
