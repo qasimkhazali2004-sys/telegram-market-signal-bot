@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import aiohttp
 import pandas as pd
@@ -40,10 +40,18 @@ class TwelveDataProvider:
         self._request_lock = asyncio.Lock()
         self._session: aiohttp.ClientSession | None = None
 
+        # Prevent the monitor from hammering the quote endpoint.
+        self._snapshot_cache: dict[str, tuple[datetime, Snapshot]] = {}
+        self._snapshot_ttl = timedelta(seconds=12)
+
+        # Backoff after a provider rate-limit response.
+        self._rate_limited_until: datetime | None = None
+        self._backoff_seconds = 5
+
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(
-                total=12,
+                total=15,
                 connect=4,
                 sock_read=10,
             )
@@ -51,12 +59,22 @@ class TwelveDataProvider:
         return self._session
 
     async def _get(self, endpoint: str, params: dict) -> dict:
+        now = datetime.now(timezone.utc)
+
+        if (
+            self._rate_limited_until is not None
+            and now < self._rate_limited_until
+        ):
+            wait = (
+                self._rate_limited_until - now
+            ).total_seconds()
+            raise RuntimeError(
+                f"Provider rate limited; retry in {max(1, int(wait))}s."
+            )
+
         params = {**params, "apikey": self.api_key}
         session = await self._get_session()
 
-        # Short lock only around the actual HTTP request.
-        # IMPORTANT: do not sleep here; the previous 8s delay made every
-        # market-data request unnecessarily slow.
         async with self._request_lock:
             async with session.get(
                 f"{self.base_url}/{endpoint}",
@@ -67,21 +85,37 @@ class TwelveDataProvider:
                 except Exception:
                     text = await r.text()
                     raise RuntimeError(
-                        f"Provider returned invalid JSON (HTTP {r.status}): {text[:300]}"
+                        f"Provider returned invalid JSON (HTTP {r.status}): "
+                        f"{text[:300]}"
                     )
 
         if r.status == 429:
-            raise RuntimeError(
-                "Provider rate limit reached (HTTP 429). "
-                "Try again after a short pause."
+            # Do not keep retrying immediately. Let the caller fall back to
+            # cached data where possible, then try again after a short pause.
+            self._rate_limited_until = (
+                datetime.now(timezone.utc)
+                + timedelta(seconds=self._backoff_seconds)
             )
+            self._backoff_seconds = min(
+                60,
+                max(5, self._backoff_seconds * 2),
+            )
+            raise RuntimeError(
+                "Provider rate limit reached (HTTP 429)."
+            )
+
+        # Successful request: slowly relax the backoff.
+        self._backoff_seconds = 5
 
         if r.status >= 400:
             raise RuntimeError(
                 f"Provider HTTP {r.status}: {data}"
             )
 
-        if isinstance(data, dict) and data.get("status") == "error":
+        if (
+            isinstance(data, dict)
+            and data.get("status") == "error"
+        ):
             raise RuntimeError(
                 str(data.get("message") or data)
             )
@@ -131,10 +165,25 @@ class TwelveDataProvider:
         ).reset_index(drop=True)
 
     async def snapshot(self, symbol: str) -> Snapshot:
-        data = await self._get(
-            "quote",
-            {"symbol": self.MAP[symbol]},
-        )
+        now = datetime.now(timezone.utc)
+        cached = self._snapshot_cache.get(symbol)
+
+        if cached is not None:
+            cached_at, snap = cached
+            if now - cached_at <= self._snapshot_ttl:
+                return snap
+
+        try:
+            data = await self._get(
+                "quote",
+                {"symbol": self.MAP[symbol]},
+            )
+        except Exception:
+            # During a rate-limit window, use a fresh-enough quote instead of
+            # breaking the monitor loop.
+            if cached is not None:
+                return cached[1]
+            raise
 
         raw_timestamp = (
             data.get("last_quote_at")
@@ -156,13 +205,16 @@ class TwelveDataProvider:
                 f"لا يوجد وقت موثوق للسعر: {symbol}"
             )
 
-        return Snapshot(
+        snap = Snapshot(
             symbol=symbol,
             last=float(data["close"]),
             bid=float(data["bid"]) if data.get("bid") else None,
             ask=float(data["ask"]) if data.get("ask") else None,
             timestamp=quote_timestamp,
         )
+
+        self._snapshot_cache[symbol] = (now, snap)
+        return snap
 
     async def close(self):
         if self._session is not None and not self._session.closed:
