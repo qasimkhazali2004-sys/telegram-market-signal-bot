@@ -1,9 +1,11 @@
 from __future__ import annotations
+
 from pathlib import Path
 import sqlite3
 import json
 from datetime import date
 from app.models import TradeSignal
+
 
 class Database:
     def __init__(self, path: str):
@@ -38,8 +40,26 @@ class Database:
           status TEXT DEFAULT 'WAITING_ENTRY',
           result TEXT,
           r_multiple REAL,
-          duration_minutes REAL
+          duration_minutes REAL,
+          mode TEXT DEFAULT 'PENDING',
+          expires_at TEXT
         )""")
+
+        columns = {
+            row[1]
+            for row in c.execute("PRAGMA table_info(signals)").fetchall()
+        }
+
+        if "mode" not in columns:
+            c.execute(
+                "ALTER TABLE signals ADD COLUMN mode TEXT DEFAULT 'PENDING'"
+            )
+
+        if "expires_at" not in columns:
+            c.execute(
+                "ALTER TABLE signals ADD COLUMN expires_at TEXT"
+            )
+
         self.conn.commit()
 
     def daily_count(self) -> int:
@@ -51,45 +71,83 @@ class Database:
 
     def duplicate(self, setup_id: str, hours: int = 8) -> bool:
         row = self.conn.execute(
-            "SELECT 1 FROM signals WHERE setup_id=? AND datetime(created_at)>=datetime('now', ?)",
+            """SELECT 1 FROM signals
+               WHERE setup_id=?
+               AND datetime(created_at)>=datetime('now', ?)""",
             (setup_id, f"-{hours} hours"),
         ).fetchone()
         return row is not None
 
-    def save(self, s: TradeSignal):
+    def save(
+        self,
+        s: TradeSignal,
+        *,
+        mode: str = "PENDING",
+        status: str = "WAITING_ENTRY",
+        expires_at: str | None = None,
+    ):
         self.conn.execute("""
         INSERT OR IGNORE INTO signals
-        (setup_id,created_at,symbol,direction,style,timeframe,entry,stop_loss,tp1,tp2,tp3,rr,
-         confidence,reason,confirmations,market_state,risk_pct,position_size)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        (setup_id,created_at,symbol,direction,style,timeframe,entry,stop_loss,
+         tp1,tp2,tp3,rr,confidence,reason,confirmations,market_state,
+         risk_pct,position_size,status,mode,expires_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
-            s.setup_id, s.created_at.isoformat(), s.symbol, s.direction.value,
-            s.style.value, s.timeframe, s.entry, s.stop_loss, s.tp1, s.tp2, s.tp3,
-            s.rr, s.confidence, s.reason, json.dumps(s.confirmations, ensure_ascii=False),
-            s.market_state.value, s.risk_pct, s.position_size
+            s.setup_id,
+            s.created_at.isoformat(),
+            s.symbol,
+            s.direction.value,
+            s.style.value,
+            s.timeframe,
+            s.entry,
+            s.stop_loss,
+            s.tp1,
+            s.tp2,
+            s.tp3,
+            s.rr,
+            s.confidence,
+            s.reason,
+            json.dumps(s.confirmations, ensure_ascii=False),
+            s.market_state.value,
+            s.risk_pct,
+            s.position_size,
+            status,
+            mode,
+            expires_at,
         ))
         self.conn.commit()
 
     def active(self) -> list[dict]:
         rows = self.conn.execute(
-            """SELECT setup_id,symbol,direction,entry,stop_loss,tp1,tp2,tp3,status
-               FROM signals WHERE status NOT IN ('CLOSED','SL_HIT','INVALIDATED')"""
+            """SELECT setup_id,symbol,direction,entry,stop_loss,tp1,tp2,tp3,
+                      status,mode,expires_at
+               FROM signals
+               WHERE status NOT IN ('CLOSED','SL_HIT','INVALIDATED')"""
         ).fetchall()
-        keys = ["setup_id","symbol","direction","entry","stop_loss","tp1","tp2","tp3","status"]
+        keys = [
+            "setup_id", "symbol", "direction", "entry", "stop_loss",
+            "tp1", "tp2", "tp3", "status", "mode", "expires_at"
+        ]
         return [dict(zip(keys, r)) for r in rows]
 
     def update_status(self, setup_id: str, status: str):
-        self.conn.execute("UPDATE signals SET status=? WHERE setup_id=?", (status, setup_id))
-        self.conn.commit()
-def update_stop(self, setup_id: str, stop_loss: float):
-    self.conn.execute(
-        "UPDATE signals SET stop_loss=? WHERE setup_id=?",
-        (stop_loss, setup_id),
-    )
-    self.conn.commit()
-    def result(self, setup_id: str, result: str, r_multiple: float, duration_minutes: float):
         self.conn.execute(
-            "UPDATE signals SET result=?,r_multiple=?,duration_minutes=?,status='CLOSED' WHERE setup_id=?",
+            "UPDATE signals SET status=? WHERE setup_id=?",
+            (status, setup_id)
+        )
+        self.conn.commit()
+
+    def result(
+        self,
+        setup_id: str,
+        result: str,
+        r_multiple: float,
+        duration_minutes: float,
+    ):
+        self.conn.execute(
+            """UPDATE signals
+               SET result=?,r_multiple=?,duration_minutes=?,status='CLOSED'
+               WHERE setup_id=?""",
             (result, r_multiple, duration_minutes, setup_id)
         )
         self.conn.commit()
@@ -100,15 +158,18 @@ def update_stop(self, setup_id: str, stop_loss: float):
         ).fetchall()
         if not rows:
             return {"trades": 0}
+
         rs = [float(r[1]) for r in rows]
         wins = sum(r > 0 for r in rs)
         gross_profit = sum(r for r in rs if r > 0)
         gross_loss = -sum(r for r in rs if r < 0)
+
         equity = peak = max_dd = 0.0
         for r in rs:
             equity += r
             peak = max(peak, equity)
             max_dd = max(max_dd, peak - equity)
+
         return {
             "trades": len(rs),
             "win_rate": wins / len(rs),
