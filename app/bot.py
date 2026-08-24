@@ -170,10 +170,38 @@ class TelegramApp:
                 text,
                 reply_markup=keyboard(),
             )
+            _, symbol, timeframe = q.data.split(":", 2)
+
+            await q.message.edit_text("⏳ جاري تحليل السوق...")
+
+            text = await self.engine.scan(
+                Style.INTRADAY,
+                selected_symbol=symbol,
+                timeframe=timeframe,
+            )
+
+            await q.message.edit_text(
+                text,
+                reply_markup=keyboard(),
+            )
 
         @self.dp.callback_query(F.data.startswith("scalp_tf:"))
         async def scalp_timeframe(q: CallbackQuery):
             await q.answer()
+            _, symbol, timeframe = q.data.split(":", 2)
+
+            await q.message.edit_text("⏳ جاري تحليل السوق...")
+
+            text = await self.engine.scan(
+                Style.SCALPING,
+                selected_symbol=symbol,
+                timeframe=timeframe,
+            )
+
+            await q.message.edit_text(
+                text,
+                reply_markup=keyboard(),
+            )
             _, symbol, timeframe = q.data.split(":", 2)
 
             await q.message.edit_text("⏳ جاري تحليل السوق...")
@@ -313,30 +341,6 @@ class TelegramApp:
                 f"فلتر الأخبار: {'مفعل' if self.s.news_filter_enabled else 'معطل'}"
             )
 
-    async def scan_loop(self):
-        if not self.s.target_chat_id:
-            return
-
-        while True:
-            try:
-                text = await self.engine.scan(Style.INTRADAY)
-
-                if not text.startswith("🟡"):
-                    await self.bot.send_message(
-                        self.s.target_chat_id,
-                        text,
-                    )
-
-                async for event in self.engine.monitor_once():
-                    await self.bot.send_message(
-                        self.s.target_chat_id,
-                        event.message,
-                    )
-
-            except Exception:
-                log.exception("background scan failed")
-
-            await asyncio.sleep(self.s.scan_seconds)
 
     async def run(self):
         tasks = [asyncio.create_task(self.scan_loop())]
