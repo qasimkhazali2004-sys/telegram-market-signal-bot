@@ -1,141 +1,181 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-
-from app.data_provider import TwelveDataProvider
-from app.database import Database
-from app.models import Direction
-
-
-@dataclass
-class MonitorEvent:
-    setup_id: str
-    message: str
-    status: str
+from pathlib import Path
+import sqlite3
+import json
+from datetime import date
+from app.models import TradeSignal
 
 
-class PositionMonitor:
-    def __init__(
+class Database:
+    def __init__(self, path: str):
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(p, check_same_thread=False)
+        self.init()
+
+    def init(self):
+        c = self.conn.cursor()
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS signals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          setup_id TEXT UNIQUE,
+          created_at TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          direction TEXT NOT NULL,
+          style TEXT NOT NULL,
+          timeframe TEXT NOT NULL,
+          entry REAL NOT NULL,
+          stop_loss REAL NOT NULL,
+          tp1 REAL NOT NULL,
+          tp2 REAL NOT NULL,
+          tp3 REAL,
+          rr REAL NOT NULL,
+          confidence INTEGER NOT NULL,
+          reason TEXT,
+          confirmations TEXT,
+          market_state TEXT,
+          risk_pct REAL NOT NULL,
+          position_size REAL,
+          status TEXT DEFAULT 'WAITING_ENTRY',
+          result TEXT,
+          r_multiple REAL,
+          duration_minutes REAL,
+          mode TEXT DEFAULT 'PENDING',
+          expires_at TEXT
+        )""")
+
+        columns = {
+            row[1]
+            for row in c.execute("PRAGMA table_info(signals)").fetchall()
+        }
+
+        if "mode" not in columns:
+            c.execute(
+                "ALTER TABLE signals ADD COLUMN mode TEXT DEFAULT 'PENDING'"
+            )
+
+        if "expires_at" not in columns:
+            c.execute(
+                "ALTER TABLE signals ADD COLUMN expires_at TEXT"
+            )
+
+        self.conn.commit()
+
+    def daily_count(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE substr(created_at,1,10)=?",
+            (date.today().isoformat(),)
+        ).fetchone()
+        return int(row[0])
+
+    def duplicate(self, setup_id: str, hours: int = 8) -> bool:
+        row = self.conn.execute(
+            """SELECT 1 FROM signals
+               WHERE setup_id=?
+               AND datetime(created_at)>=datetime('now', ?)""",
+            (setup_id, f"-{hours} hours"),
+        ).fetchone()
+        return row is not None
+
+    def save(
         self,
-        provider: TwelveDataProvider,
-        db: Database,
-        breakeven_r: float = 1.0,
+        s: TradeSignal,
+        *,
+        mode: str = "PENDING",
+        status: str = "WAITING_ENTRY",
+        expires_at: str | None = None,
     ):
-        self.provider = provider
-        self.db = db
-        self.breakeven_r = breakeven_r
+        self.conn.execute("""
+        INSERT OR IGNORE INTO signals
+        (setup_id,created_at,symbol,direction,style,timeframe,entry,stop_loss,
+         tp1,tp2,tp3,rr,confidence,reason,confirmations,market_state,
+         risk_pct,position_size,status,mode,expires_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            s.setup_id,
+            s.created_at.isoformat(),
+            s.symbol,
+            s.direction.value,
+            s.style.value,
+            s.timeframe,
+            s.entry,
+            s.stop_loss,
+            s.tp1,
+            s.tp2,
+            s.tp3,
+            s.rr,
+            s.confidence,
+            s.reason,
+            json.dumps(s.confirmations, ensure_ascii=False),
+            s.market_state.value,
+            s.risk_pct,
+            s.position_size,
+            status,
+            mode,
+            expires_at,
+        ))
+        self.conn.commit()
 
-    async def check(self, item: dict) -> MonitorEvent | None:
-        # Pending-entry expiry is checked before requesting a quote.
-        if item["status"] == "WAITING_ENTRY" and item.get("expires_at"):
-            expires_at = datetime.fromisoformat(item["expires_at"])
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
+    def active(self) -> list[dict]:
+        rows = self.conn.execute(
+            """SELECT setup_id,symbol,direction,entry,stop_loss,tp1,tp2,tp3,
+                      status,mode,expires_at
+               FROM signals
+               WHERE status NOT IN ('CLOSED','SL_HIT','INVALIDATED')"""
+        ).fetchall()
+        keys = [
+            "setup_id", "symbol", "direction", "entry", "stop_loss",
+            "tp1", "tp2", "tp3", "status", "mode", "expires_at"
+        ]
+        return [dict(zip(keys, r)) for r in rows]
 
-            if datetime.now(timezone.utc) >= expires_at:
-                self.db.update_status(item["setup_id"], "INVALIDATED")
-                return MonitorEvent(
-                    item["setup_id"],
-                    "⏰ <b>انتهت مدة التوصية</b>\nلم يتم الدخول لأن السعر لم يصل إلى منطقة الدخول قبل انتهاء المدة.",
-                    "EXPIRED",
-                )
+    def update_status(self, setup_id: str, status: str):
+        self.conn.execute(
+            "UPDATE signals SET status=? WHERE setup_id=?",
+            (status, setup_id)
+        )
+        self.conn.commit()
 
-        snap = await self.provider.snapshot(item["symbol"])
-        price = snap.last
+    def result(
+        self,
+        setup_id: str,
+        result: str,
+        r_multiple: float,
+        duration_minutes: float,
+    ):
+        self.conn.execute(
+            """UPDATE signals
+               SET result=?,r_multiple=?,duration_minutes=?,status='CLOSED'
+               WHERE setup_id=?""",
+            (result, r_multiple, duration_minutes, setup_id)
+        )
+        self.conn.commit()
 
-        entry = float(item["entry"])
-        stop = float(item["stop_loss"])
-        tp1 = float(item["tp1"])
-        tp2 = float(item["tp2"])
-        tp3 = float(item["tp3"]) if item["tp3"] is not None else None
+    def metrics(self) -> dict:
+        rows = self.conn.execute(
+            "SELECT result,r_multiple,style FROM signals WHERE result IS NOT NULL"
+        ).fetchall()
+        if not rows:
+            return {"trades": 0}
 
-        direction = item["direction"]
-        status = item["status"]
+        rs = [float(r[1]) for r in rows]
+        wins = sum(r > 0 for r in rs)
+        gross_profit = sum(r for r in rs if r > 0)
+        gross_loss = -sum(r for r in rs if r < 0)
 
-        if status == "WAITING_ENTRY":
-            if direction == Direction.BUY.value and price >= entry:
-                self.db.update_status(item["setup_id"], "ENTRY_HIT")
-                return MonitorEvent(
-                    item["setup_id"],
-                    f"🎯 <b>تم تفعيل الدخول</b>\nالسعر الحالي: {price:.5f}",
-                    "ENTRY_HIT",
-                )
+        equity = peak = max_dd = 0.0
+        for r in rs:
+            equity += r
+            peak = max(peak, equity)
+            max_dd = max(max_dd, peak - equity)
 
-            if direction == Direction.SELL.value and price <= entry:
-                self.db.update_status(item["setup_id"], "ENTRY_HIT")
-                return MonitorEvent(
-                    item["setup_id"],
-                    f"🎯 <b>تم تفعيل الدخول</b>\nالسعر الحالي: {price:.5f}",
-                    "ENTRY_HIT",
-                )
-
-            return None
-
-        if direction == Direction.BUY.value:
-            if price <= stop:
-                self.db.result(item["setup_id"], "LOSS", -1.0, 0.0)
-                return MonitorEvent(
-                    item["setup_id"],
-                    "❌ <b>تم ضرب وقف الخسارة</b>",
-                    "LOSS",
-                )
-
-            if price >= tp1 and status == "ENTRY_HIT":
-                self.db.update_status(item["setup_id"], "TP1_HIT")
-                return MonitorEvent(
-                    item["setup_id"],
-                    "✅ <b>TP1 HIT</b>",
-                    "TP1",
-                )
-
-            if price >= tp2 and status in ("ENTRY_HIT", "TP1_HIT"):
-                self.db.update_status(item["setup_id"], "TP2_HIT")
-                return MonitorEvent(
-                    item["setup_id"],
-                    "✅ <b>TP2 HIT</b>",
-                    "TP2",
-                )
-
-            if tp3 is not None and price >= tp3:
-                self.db.result(item["setup_id"], "WIN", 3.0, 0.0)
-                return MonitorEvent(
-                    item["setup_id"],
-                    "✅ <b>TP3 HIT — الصفقة مكتملة</b>",
-                    "TP3",
-                )
-
-        else:
-            if price >= stop:
-                self.db.result(item["setup_id"], "LOSS", -1.0, 0.0)
-                return MonitorEvent(
-                    item["setup_id"],
-                    "❌ <b>تم ضرب وقف الخسارة</b>",
-                    "LOSS",
-                )
-
-            if price <= tp1 and status == "ENTRY_HIT":
-                self.db.update_status(item["setup_id"], "TP1_HIT")
-                return MonitorEvent(
-                    item["setup_id"],
-                    "✅ <b>TP1 HIT</b>",
-                    "TP1",
-                )
-
-            if price <= tp2 and status in ("ENTRY_HIT", "TP1_HIT"):
-                self.db.update_status(item["setup_id"], "TP2_HIT")
-                return MonitorEvent(
-                    item["setup_id"],
-                    "✅ <b>TP2 HIT</b>",
-                    "TP2",
-                )
-
-            if tp3 is not None and price <= tp3:
-                self.db.result(item["setup_id"], "WIN", 3.0, 0.0)
-                return MonitorEvent(
-                    item["setup_id"],
-                    "✅ <b>TP3 HIT — الصفقة مكتملة</b>",
-                    "TP3",
-                )
-
-        return None
+        return {
+            "trades": len(rs),
+            "win_rate": wins / len(rs),
+            "loss_rate": 1 - wins / len(rs),
+            "profit_factor": gross_profit / gross_loss if gross_loss else None,
+            "average_r": sum(rs) / len(rs),
+            "expectancy": sum(rs) / len(rs),
+            "max_drawdown_r": max_dd,
+        }
