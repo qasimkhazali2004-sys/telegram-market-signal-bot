@@ -1,11 +1,8 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
-from datetime import datetime, timezone
-
 from app.data_provider import TwelveDataProvider
-from app.state_store import PendingStateStore
-
+from app.database import Database
+from app.models import Direction
 
 @dataclass
 class MonitorEvent:
@@ -13,36 +10,15 @@ class MonitorEvent:
     message: str
     status: str
 
-
 class PositionMonitor:
-    def __init__(
-        self,
-        provider: TwelveDataProvider,
-        state_store: PendingStateStore,
-        breakeven_r: float = 1.0,
-    ):
+    def __init__(self, provider: TwelveDataProvider, db: Database, breakeven_r: float = 1.0):
         self.provider = provider
-        self.states = state_store
+        self.db = db
         self.breakeven_r = breakeven_r
 
     async def check(self, item: dict) -> MonitorEvent | None:
-        if item["status"] == "WAITING_ENTRY" and item.get("expires_at"):
-            expires_at = datetime.fromisoformat(item["expires_at"])
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-
-            if datetime.now(timezone.utc) >= expires_at:
-                self.states.status(item["setup_id"], "EXPIRED")
-                return MonitorEvent(
-                    item["setup_id"],
-                    "⏰ <b>انتهت مدة التوصية</b>\n"
-                    "لم يصل السعر إلى الدخول قبل انتهاء المدة.",
-                    "EXPIRED",
-                )
-
         snap = await self.provider.snapshot(item["symbol"])
-        price = float(snap.last)
-
+        price = snap.last
         entry = float(item["entry"])
         stop = float(item["stop_loss"])
         tp1 = float(item["tp1"])
@@ -52,85 +28,38 @@ class PositionMonitor:
         direction = item["direction"]
         status = item["status"]
 
+        
+
         if status == "WAITING_ENTRY":
-            hit = (
-                price >= entry
-                if direction == "BUY"
-                else price <= entry
-            )
-            if hit:
-                self.states.status(item["setup_id"], "ENTRY_HIT")
+            if direction == Direction.BUY.value and price <= entry:
+                self.db.update_status(item["setup_id"], "ENTRY_HIT")
                 return MonitorEvent(
                     item["setup_id"],
-                    f"🎯 <b>تم تفعيل الدخول</b>\nالسعر: {price:.5f}",
+                    "🎯 <b>تم تفعيل الدخول</b>",
                     "ENTRY_HIT",
                 )
+
+            if direction == Direction.SELL.value and price >= entry:
+                self.db.update_status(item["setup_id"], "ENTRY_HIT")
+                return MonitorEvent(
+                    item["setup_id"],
+                    "🎯 <b>تم تفعيل الدخول</b>",
+                    "ENTRY_HIT",
+                )
+
             return None
-
-        if direction == "BUY":
-            if price <= stop:
-                self.states.status(item["setup_id"], "SL_HIT")
-                return MonitorEvent(
-                    item["setup_id"],
-                    "🛑 <b>SL HIT</b>",
-                    "SL_HIT",
-                )
-
-            if price >= tp3 if tp3 is not None else False:
-                self.states.status(item["setup_id"], "TP3_HIT")
-                return MonitorEvent(
-                    item["setup_id"],
-                    "✅ <b>TP3 HIT — الصفقة مكتملة</b>",
-                    "TP3_HIT",
-                )
-
-            if price >= tp2 and status in ("ENTRY_HIT", "TP1_HIT"):
-                self.states.status(item["setup_id"], "TP2_HIT")
-                return MonitorEvent(
-                    item["setup_id"],
-                    "✅ <b>TP2 HIT</b>",
-                    "TP2_HIT",
-                )
-
-            if price >= tp1 and status == "ENTRY_HIT":
-                self.states.status(item["setup_id"], "TP1_HIT")
-                return MonitorEvent(
-                    item["setup_id"],
-                    "✅ <b>TP1 HIT</b>",
-                    "TP1_HIT",
-                )
-
         else:
             if price >= stop:
-                self.states.status(item["setup_id"], "SL_HIT")
-                return MonitorEvent(
-                    item["setup_id"],
-                    "🛑 <b>SL HIT</b>",
-                    "SL_HIT",
-                )
-
-            if price <= tp3 if tp3 is not None else False:
-                self.states.status(item["setup_id"], "TP3_HIT")
-                return MonitorEvent(
-                    item["setup_id"],
-                    "✅ <b>TP3 HIT — الصفقة مكتملة</b>",
-                    "TP3_HIT",
-                )
-
-            if price <= tp2 and status in ("ENTRY_HIT", "TP1_HIT"):
-                self.states.status(item["setup_id"], "TP2_HIT")
-                return MonitorEvent(
-                    item["setup_id"],
-                    "✅ <b>TP2 HIT</b>",
-                    "TP2_HIT",
-                )
-
+                self.db.result(item["setup_id"], "LOSS", -1.0, 0.0)
+                return MonitorEvent(item["setup_id"], "❌ <b>تم ضرب وقف الخسارة</b>", "LOSS")
             if price <= tp1 and status == "ENTRY_HIT":
-                self.states.status(item["setup_id"], "TP1_HIT")
-                return MonitorEvent(
-                    item["setup_id"],
-                    "✅ <b>TP1 HIT</b>",
-                    "TP1_HIT",
-                )
+                self.db.update_status(item["setup_id"], "TP1_HIT")
+                return MonitorEvent(item["setup_id"], "✅ <b>TP1 HIT</b>", "TP1")
+            if price <= tp2 and status in ("ENTRY_HIT","TP1_HIT"):
+                self.db.update_status(item["setup_id"], "TP2_HIT")
+                return MonitorEvent(item["setup_id"], "✅ <b>TP2 HIT</b>", "TP2")
+            if tp3 is not None and price <= tp3:
+                self.db.result(item["setup_id"], "WIN", 3.0, 0.0)
+                return MonitorEvent(item["setup_id"], "✅ <b>TP3 HIT</b>", "TP3")
 
         return None
