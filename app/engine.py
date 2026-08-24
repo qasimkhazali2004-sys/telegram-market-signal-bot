@@ -80,7 +80,17 @@ class SignalEngine:
                     continue
 
                 self.db.save(signal)
-                return signal_message(signal)
+                return (
+    f"⏳ <b>إشارة بانتظار الدخول</b>\n\n"
+    f"🎯 الدخول: {signal.entry}\n"
+    f"🛑 وقف الخسارة: {signal.stop_loss}\n"
+    f"✅ الهدف 1: {signal.tp1}\n"
+    f"✅ الهدف 2: {signal.tp2}\n"
+    f"✅ الهدف 3: {signal.tp3}\n"
+    f"📊 الثقة: {signal.confidence}/100\n"
+    f"⏱️ الفريم: {signal.timeframe}\n"
+    f"انتظر وصول السعر إلى منطقة الدخول، ثم سيتم تفعيلها."
+)
 
             except Exception:
                 log.exception("scan error on %s", symbol)
