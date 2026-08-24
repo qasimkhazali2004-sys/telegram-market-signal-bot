@@ -106,7 +106,7 @@ class TelegramApp:
                 reply_markup=keyboard()
             )
 
-       @self.dp.callback_query(F.data.startswith("trade_tf:"))
+        @self.dp.callback_query(F.data.startswith("trade_tf:"))
         async def trade_timeframe(q: CallbackQuery):
             _, symbol, timeframe = q.data.split(":", 2)
 
@@ -128,7 +128,7 @@ class TelegramApp:
             await q.answer()
 
 
-       @self.dp.callback_query(F.data.startswith("scalp_tf:"))
+        @self.dp.callback_query(F.data.startswith("scalp_tf:"))
         async def scalp_timeframe(q: CallbackQuery):
             _, symbol, timeframe = q.data.split(":", 2)
 
@@ -150,7 +150,7 @@ class TelegramApp:
             await q.answer()
 
 
-       @self.dp.callback_query(F.data.startswith("trade:"))
+        @self.dp.callback_query(F.data.startswith("trade:"))
         async def trade_asset(q: CallbackQuery):
             symbol = q.data.split(":", 1)[1]
 
@@ -160,7 +160,7 @@ class TelegramApp:
             )
 
             await q.answer()
-       @self.dp.callback_query(F.data.startswith("scalp:"))
+        @self.dp.callback_query(F.data.startswith("scalp:"))
         async def scalp_asset(q: CallbackQuery):
             symbol = q.data.split(":", 1)[1]
             await q.message.edit_text(
