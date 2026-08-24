@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+import os
 
 from app.config import Settings, SYMBOL_PRIORITY
 from app.data_provider import TwelveDataProvider
@@ -13,7 +16,15 @@ from app.monitor import PositionMonitor
 from app.strategy import analyze_single
 from app.validation import validate
 
+
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class ScanResult:
+    text: str
+    setup_id: str | None = None
+    mode: str | None = None
 
 
 class SignalEngine:
@@ -26,38 +37,101 @@ class SignalEngine:
             self.db,
             settings.breakeven_r,
         )
+        self.display_tz = ZoneInfo(os.getenv("BOT_TIMEZONE", "UTC"))
+
+    @staticmethod
+    def _expiry_delta(timeframe: str) -> timedelta:
+        mapping = {
+            "1min": timedelta(minutes=1),
+            "5min": timedelta(minutes=5),
+            "15min": timedelta(minutes=15),
+            "1h": timedelta(hours=1),
+            "4h": timedelta(hours=4),
+        }
+        return mapping.get(timeframe, timedelta(minutes=15))
+
+    @staticmethod
+    def _fmt_price(value: float) -> str:
+        # Keep Telegram output clean without floating-point tails.
+        if abs(value) >= 1000:
+            return f"{value:.2f}"
+        if abs(value) >= 100:
+            return f"{value:.3f}"
+        return f"{value:.5f}".rstrip("0").rstrip(".")
+
+    def _format_signal(
+        self,
+        signal,
+        *,
+        mode: str,
+        expires_at: datetime | None,
+    ) -> str:
+        direct = mode == "DIRECT"
+        header = (
+            f"🎯 <b>صفقة دخول مباشر — {signal.timeframe}</b>"
+            if direct
+            else f"🔔 <b>توصية — {signal.timeframe}</b>"
+        )
+
+        action = "🟢 شراء" if signal.direction.value == "BUY" else "🔴 بيع"
+        body = (
+            f"{header}\n\n"
+            f"{action}\n"
+            f"🎯 الدخول: {self._fmt_price(signal.entry)}\n"
+            f"🛑 وقف الخسارة: {self._fmt_price(signal.stop_loss)}\n"
+            f"✅ جني الأرباح 1: {self._fmt_price(signal.tp1)}\n"
+            f"✅ جني الأرباح 2: {self._fmt_price(signal.tp2)}\n"
+            f"✅ جني الأرباح 3: {self._fmt_price(signal.tp3)}\n"
+            f"📊 R:R = 1:{signal.rr:.2f}\n"
+            f"✅ الثقة: {signal.confidence}%\n"
+        )
+
+        if direct:
+            body += "\n⚡ <b>دخول مباشر: يتم اعتبار الصفقة مفعّلة الآن.</b>"
+        else:
+            local_expiry = expires_at.astimezone(self.display_tz)
+            body += (
+                f"\n⏳ <b>تنتهي:</b> {local_expiry.strftime('%Y-%m-%d %H:%M:%S')}"
+                f"\nإذا لم يصل السعر إلى الدخول قبل هذا الوقت، يتم إلغاء التوصية."
+            )
+
+        return body
 
     async def scan(
         self,
         style: Style,
         selected_symbol: str | None = None,
         timeframe: str | None = None,
-    ) -> str:
-        symbol = selected_symbol if selected_symbol in SYMBOL_PRIORITY else SYMBOL_PRIORITY[0]
+        mode: str = "PENDING",
+    ) -> ScanResult:
+        symbol = (
+            selected_symbol
+            if selected_symbol in SYMBOL_PRIORITY
+            else SYMBOL_PRIORITY[0]
+        )
         tf = timeframe or (
-            self.s.timeframes["scalping" if style == Style.SCALPING else "intraday"]
+            self.s.timeframes[
+                "scalping" if style == Style.SCALPING else "intraday"
+            ]
             .split(",")[0]
             .strip()
         )
 
         try:
-            # One market-data request only. This is the main speed fix.
             candles = await asyncio.wait_for(
                 self.provider.candles(symbol, tf, 220),
                 timeout=9,
             )
         except asyncio.TimeoutError:
             log.error("market data timeout on %s %s", symbol, tf)
-            return (
-                "⚠️ تعذر جلب بيانات السوق بسرعة.\n"
-                "أعد المحاولة بعد لحظات."
+            return ScanResult(
+                "⚠️ تعذر جلب بيانات السوق بسرعة.\nأعد المحاولة بعد لحظات."
             )
         except Exception:
             log.exception("market data failed on %s %s", symbol, tf)
-            return "⚠️ تعذر جلب بيانات السوق حاليًا."
+            return ScanResult("⚠️ تعذر جلب بيانات السوق حاليًا.")
 
         try:
-            # Attach selected timeframe for the strategy/formatter.
             try:
                 candles.timeframe = tf
             except Exception:
@@ -73,28 +147,65 @@ class SignalEngine:
             )
             signal.timeframe = tf
 
-            ok, reason = validate(signal, self.s.max_signal_age_seconds)
-            if not ok:
-                log.warning("validation rejected %s: %s", symbol, reason)
-                return "⚠️ تعذر بناء إشارة صالحة من بيانات السوق الحالية."
-
-            # No daily trade cap.
-            self.db.save(signal)
-
-            return (
-                "⏳ <b>إشارة بانتظار الدخول</b>\n\n"
-                f"🎯 الدخول: {signal.entry}\n"
-                f"🛑 وقف الخسارة: {signal.stop_loss}\n"
-                f"✅ الهدف 1: {signal.tp1}\n"
-                f"✅ الهدف 2: {signal.tp2}\n"
-                f"✅ الهدف 3: {signal.tp3}\n"
-                f"📊 الثقة: {signal.confidence}/100\n"
-                f"⏱️ الفريم: {tf}\n"
-                "انتظر وصول السعر إلى منطقة الدخول."
+            ok, reason = validate(
+                signal,
+                self.s.max_signal_age_seconds,
             )
+            if not ok:
+                log.warning(
+                    "validation rejected %s: %s",
+                    symbol,
+                    reason,
+                )
+                return ScanResult(
+                    "⚠️ تعذر بناء إشارة صالحة من بيانات السوق الحالية."
+                )
+
+            if self.db.duplicate(signal.setup_id):
+                return ScanResult(
+                    "ℹ️ توجد إشارة مشابهة حديثة لهذا الأصل والفريم."
+                )
+
+            now = datetime.now(timezone.utc)
+
+            if mode == "DIRECT":
+                self.db.save(
+                    signal,
+                    mode="DIRECT",
+                    status="ENTRY_HIT",
+                    expires_at=None,
+                )
+                return ScanResult(
+                    self._format_signal(
+                        signal,
+                        mode="DIRECT",
+                        expires_at=None,
+                    ),
+                    setup_id=signal.setup_id,
+                    mode="DIRECT",
+                )
+
+            expires_at = now + self._expiry_delta(tf)
+            self.db.save(
+                signal,
+                mode="PENDING",
+                status="WAITING_ENTRY",
+                expires_at=expires_at.isoformat(),
+            )
+
+            return ScanResult(
+                self._format_signal(
+                    signal,
+                    mode="PENDING",
+                    expires_at=expires_at,
+                ),
+                setup_id=signal.setup_id,
+                mode="PENDING",
+            )
+
         except Exception:
             log.exception("single timeframe analysis failed")
-            return "⚠️ حدث خطأ أثناء بناء الإشارة."
+            return ScanResult("⚠️ حدث خطأ أثناء بناء الإشارة.")
 
     async def monitor_once(self):
         for item in self.db.active():
@@ -103,7 +214,10 @@ class SignalEngine:
                 if event:
                     yield event
             except Exception:
-                log.exception("monitor error %s", item["setup_id"])
+                log.exception(
+                    "monitor error %s",
+                    item["setup_id"],
+                )
 
     def metrics_text(self) -> str:
         m = self.db.metrics()
