@@ -29,10 +29,10 @@ class PositionMonitor:
         status = item["status"]
 
         if status == "WAITING_ENTRY":
-            if direction == Direction.BUY.value and price >= entry:
+         if direction == Direction.BUY.value and price <= entry:
                 self.db.update_status(item["setup_id"], "ENTRY_HIT")
                 return MonitorEvent(item["setup_id"], "🎯 <b>تم تفعيل الدخول</b>", "ENTRY_HIT")
-            if direction == Direction.SELL.value and price <= entry:
+         if direction == Direction.SELL.value and price >= entry:
                 self.db.update_status(item["setup_id"], "ENTRY_HIT")
                 return MonitorEvent(item["setup_id"], "🎯 <b>تم تفعيل الدخول</b>", "ENTRY_HIT")
             return None
