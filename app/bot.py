@@ -16,7 +16,8 @@ from aiogram.client.default import DefaultBotProperties
 
 from app.config import Settings, SYMBOL_PRIORITY
 from app.models import Style
-from app.engine import SignalEngine
+from app.engine import SignalEngine, ScanResult
+
 
 log = logging.getLogger(__name__)
 
@@ -26,8 +27,14 @@ def keyboard():
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📊 صفقة أو توصية",
+                    text="📊 صفقة انتظار دخول",
                     callback_data="trade_menu",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎯 صفقة دخول مباشر",
+                    callback_data="direct_menu",
                 )
             ],
             [
@@ -116,24 +123,105 @@ class TelegramApp:
         self.engine = SignalEngine(settings)
         self.bot = Bot(
             settings.telegram_bot_token,
-            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+            default=DefaultBotProperties(
+                parse_mode=ParseMode.HTML
+            ),
         )
         self.dp = Dispatcher()
+
+        # setup_id -> original Telegram message info
+        self.signal_messages: dict[str, tuple[int, int, str]] = {}
+
         self._wire()
 
     def _is_admin(self, msg: Message) -> bool:
         return bool(
-            msg.from_user and msg.from_user.id in self.s.admin_ids
+            msg.from_user
+            and msg.from_user.id in self.s.admin_ids
         )
+
+    async def _run_scan(
+        self,
+        q: CallbackQuery,
+        *,
+        style: Style,
+        mode: str,
+    ):
+        _, symbol, timeframe = q.data.split(":", 2)
+        await q.answer()
+        await q.message.edit_text("⏳ جاري تحليل السوق...")
+
+        result: ScanResult = await self.engine.scan(
+            style,
+            selected_symbol=symbol,
+            timeframe=timeframe,
+            mode=mode,
+        )
+
+        await q.message.edit_text(
+            result.text,
+            reply_markup=keyboard(),
+        )
+
+        if result.setup_id:
+            self.signal_messages[result.setup_id] = (
+                q.message.chat.id,
+                q.message.message_id,
+                result.text,
+            )
+
+    def _append_event(self, original: str, event_text: str) -> str:
+        if event_text in original:
+            return original
+        return original + f"\n\n{event_text}"
+
+    async def _monitor_loop(self):
+        while True:
+            try:
+                async for event in self.engine.monitor_once():
+                    mapping = self.signal_messages.get(event.setup_id)
+                    if not mapping:
+                        continue
+
+                    chat_id, message_id, original = mapping
+                    updated = self._append_event(
+                        original,
+                        event.message,
+                    )
+
+                    try:
+                        await self.bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            text=updated,
+                            reply_markup=keyboard(),
+                        )
+                    except Exception:
+                        # If a message cannot be edited anymore, keep the
+                        # monitoring state alive and send a concise event.
+                        await self.bot.send_message(
+                            chat_id,
+                            event.message,
+                            reply_markup=keyboard(),
+                        )
+
+                    self.signal_messages[event.setup_id] = (
+                        chat_id,
+                        message_id,
+                        updated,
+                    )
+
+            except Exception:
+                log.exception("background monitor failed")
+
+            await asyncio.sleep(5)
 
     def _wire(self):
         @self.dp.message(Command("start"))
         async def start(msg: Message):
             await msg.answer(
                 "أهلاً بك.\n"
-                "اختر نوع التحليل ثم الأصل الذي تريد تحليله.\n"
-                "الأصول المسموحة فقط: الذهب، Bitcoin، EURUSD.\n"
-                "إذا لم تكتمل الشروط فالقرار يكون: NO TRADE.",
+                "اختر طريقة الدخول التي تريدها، ثم الأصل والفريم.",
                 reply_markup=keyboard(),
             )
 
@@ -141,8 +229,18 @@ class TelegramApp:
         async def trade_menu(q: CallbackQuery):
             await q.answer()
             await q.message.edit_text(
-                "📊 <b>صفقة أو توصية</b>\n\nاختر الأصل:",
+                "📊 <b>صفقة انتظار دخول</b>\n\nاختر الأصل:",
                 reply_markup=asset_keyboard("trade"),
+            )
+
+        @self.dp.callback_query(F.data == "direct_menu")
+        async def direct_menu(q: CallbackQuery):
+            await q.answer()
+            await q.message.edit_text(
+                "🎯 <b>صفقة دخول مباشر</b>\n\n"
+                "هذه الطريقة تعتبر الصفقة مفعّلة مباشرة بعد التحليل.\n"
+                "اختر الأصل:",
+                reply_markup=asset_keyboard("direct"),
             )
 
         @self.dp.callback_query(F.data == "scalp_menu")
@@ -155,85 +253,52 @@ class TelegramApp:
 
         @self.dp.callback_query(F.data.startswith("trade_tf:"))
         async def trade_timeframe(q: CallbackQuery):
-            await q.answer()
-            _, symbol, timeframe = q.data.split(":", 2)
-
-            await q.message.edit_text("⏳ جاري تحليل السوق...")
-
-            text = await self.engine.scan(
-                Style.INTRADAY,
-                selected_symbol=symbol,
-                timeframe=timeframe,
+            await self._run_scan(
+                q,
+                style=Style.INTRADAY,
+                mode="PENDING",
             )
 
-            await q.message.edit_text(
-                text,
-                reply_markup=keyboard(),
-            )
-            _, symbol, timeframe = q.data.split(":", 2)
-
-            await q.message.edit_text("⏳ جاري تحليل السوق...")
-
-            text = await self.engine.scan(
-                Style.INTRADAY,
-                selected_symbol=symbol,
-                timeframe=timeframe,
-            )
-
-            await q.message.edit_text(
-                text,
-                reply_markup=keyboard(),
+        @self.dp.callback_query(F.data.startswith("direct_tf:"))
+        async def direct_timeframe(q: CallbackQuery):
+            await self._run_scan(
+                q,
+                style=Style.INTRADAY,
+                mode="DIRECT",
             )
 
         @self.dp.callback_query(F.data.startswith("scalp_tf:"))
         async def scalp_timeframe(q: CallbackQuery):
-            await q.answer()
-            _, symbol, timeframe = q.data.split(":", 2)
-
-            await q.message.edit_text("⏳ جاري تحليل السوق...")
-
-            text = await self.engine.scan(
-                Style.SCALPING,
-                selected_symbol=symbol,
-                timeframe=timeframe,
-            )
-
-            await q.message.edit_text(
-                text,
-                reply_markup=keyboard(),
-            )
-            _, symbol, timeframe = q.data.split(":", 2)
-
-            await q.message.edit_text("⏳ جاري تحليل السوق...")
-
-            text = await self.engine.scan(
-                Style.SCALPING,
-                selected_symbol=symbol,
-                timeframe=timeframe,
-            )
-
-            await q.message.edit_text(
-                text,
-                reply_markup=keyboard(),
+            await self._run_scan(
+                q,
+                style=Style.SCALPING,
+                mode="PENDING",
             )
 
         @self.dp.callback_query(F.data.startswith("trade:"))
         async def trade_asset(q: CallbackQuery):
             await q.answer()
             symbol = q.data.split(":", 1)[1]
-
             await q.message.edit_text(
-                f"📊 {symbol}\n\nاختر الفريم الذي تريد تحليله:",
+                f"📊 {symbol}\n\nاختر الفريم:",
                 reply_markup=timeframe_keyboard("trade", symbol),
+            )
+
+        @self.dp.callback_query(F.data.startswith("direct:"))
+        async def direct_asset(q: CallbackQuery):
+            await q.answer()
+            symbol = q.data.split(":", 1)[1]
+            await q.message.edit_text(
+                f"🎯 {symbol}\n\nاختر الفريم للدخول المباشر:",
+                reply_markup=timeframe_keyboard("direct", symbol),
             )
 
         @self.dp.callback_query(F.data.startswith("scalp:"))
         async def scalp_asset(q: CallbackQuery):
             await q.answer()
             symbol = q.data.split(":", 1)[1]
-
             await q.message.edit_text(
-                f"⚡ سكالبينج — {symbol}\n\nاختر الفريم الذي تريد التحليل عليه:",
+                f"⚡ سكالبينج — {symbol}\n\nاختر الفريم:",
                 reply_markup=timeframe_keyboard("scalp", symbol),
             )
 
@@ -241,7 +306,7 @@ class TelegramApp:
         async def home(q: CallbackQuery):
             await q.answer()
             await q.message.edit_text(
-                "اختر نوع التحليل:",
+                "اختر طريقة الدخول:",
                 reply_markup=keyboard(),
             )
 
@@ -254,11 +319,11 @@ class TelegramApp:
                 )
                 return
 
+            await q.answer()
             await q.message.edit_text(
                 self.engine.metrics_text(),
                 reply_markup=keyboard(),
             )
-            await q.answer()
 
         @self.dp.message(Command("minconfidence"))
         async def minconfidence(msg: Message):
@@ -274,10 +339,14 @@ class TelegramApp:
 
             v = int(parts[1])
             if not 0 <= v <= 100:
-                return await msg.answer("القيمة يجب أن تكون بين 0 و100.")
+                return await msg.answer(
+                    "القيمة يجب أن تكون بين 0 و100."
+                )
 
             self.s.min_confidence = v
-            await msg.answer(f"تم تحديث الحد الأدنى إلى {v}/100.")
+            await msg.answer(
+                f"تم تحديث الحد الأدنى إلى {v}/100."
+            )
 
         @self.dp.message(Command("risk"))
         async def risk(msg: Message):
@@ -287,16 +356,21 @@ class TelegramApp:
             parts = msg.text.split()
             if len(parts) != 2:
                 return await msg.answer(
-                    f"المخاطرة الحالية: {self.s.risk_per_trade * 100:.2f}%\n"
+                    f"المخاطرة الحالية: "
+                    f"{self.s.risk_per_trade * 100:.2f}%\n"
                     "استخدم: /risk 0.5"
                 )
 
             v = float(parts[1])
             if not 0 < v <= 1:
-                return await msg.answer("المجال المسموح: 0.01% إلى 1%.")
+                return await msg.answer(
+                    "المجال المسموح: 0.01% إلى 1%."
+                )
 
             self.s.risk_per_trade = v / 100
-            await msg.answer(f"تم تحديث المخاطرة إلى {v:.2f}%.")
+            await msg.answer(
+                f"تم تحديث المخاطرة إلى {v:.2f}%."
+            )
 
         @self.dp.message(Command("newsfilter"))
         async def newsfilter(msg: Message):
@@ -310,7 +384,6 @@ class TelegramApp:
                 )
 
             self.s.news_filter_enabled = parts[1] == "on"
-
             from app.news import (
                 FailClosedNewsProvider,
                 DisabledNewsProvider,
@@ -328,18 +401,12 @@ class TelegramApp:
                 else "فلتر الأخبار معطل."
             )
 
-        @self.dp.message(Command("status"))
-        async def status(msg: Message):
-            if not self._is_admin(msg):
-                return await msg.answer("هذا الأمر للمشرف فقط.")
-
-            await msg.answer(
-                "🟢 <b>حالة النظام</b>\n\n"
-                f"الأصول: {', '.join(SYMBOL_PRIORITY)}\n"
-                f"Confidence: {self.s.min_confidence}/100\n"
-                f"Risk: {self.s.risk_per_trade * 100:.2f}%\n"
-                f"فلتر الأخبار: {'مفعل' if self.s.news_filter_enabled else 'معطل'}"
-            )
     async def run(self):
-        await self.dp.start_polling(self.bot)
-        await self.bot.session.close()
+        monitor_task = asyncio.create_task(
+            self._monitor_loop()
+        )
+        try:
+            await self.dp.start_polling(self.bot)
+        finally:
+            monitor_task.cancel()
+            await self.bot.session.close()
