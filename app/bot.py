@@ -340,15 +340,6 @@ class TelegramApp:
                 f"Risk: {self.s.risk_per_trade * 100:.2f}%\n"
                 f"فلتر الأخبار: {'مفعل' if self.s.news_filter_enabled else 'معطل'}"
             )
-
-
     async def run(self):
-        tasks = [asyncio.create_task(self.scan_loop())]
-
-        try:
-            await self.dp.start_polling(self.bot)
-        finally:
-            for task in tasks:
-                task.cancel()
-
-            await self.bot.session.close()
+        await self.dp.start_polling(self.bot)
+        await self.bot.session.close()
