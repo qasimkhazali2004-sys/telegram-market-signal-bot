@@ -20,7 +20,33 @@ def keyboard():
     ])
 
 def asset_keyboard(mode: str):
-    def timeframe_keyboard(mode: str, symbol: str):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🥇 الذهب - XAUUSD",
+                    callback_data=f"{mode}:XAUUSD",
+                ),
+                InlineKeyboardButton(
+                    text="₿ بيتكوين - BTCUSDT",
+                    callback_data=f"{mode}:BTCUSDT",
+                ),
+                InlineKeyboardButton(
+                    text="💶 يورو/دولار - EURUSD",
+                    callback_data=f"{mode}:EURUSD",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="↩️ رجوع",
+                    callback_data="home",
+                ),
+            ],
+        ]
+    )
+
+
+def timeframe_keyboard(mode: str, symbol: str):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -55,13 +81,6 @@ def asset_keyboard(mode: str):
             ],
         ]
     )
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🥇 الذهب — XAUUSD", callback_data=f"{mode}:XAUUSD")],
-        [InlineKeyboardButton(text="₿ بيتكوين — BTCUSDT", callback_data=f"{mode}:BTCUSDT")],
-        [InlineKeyboardButton(text="💶 يورو/دولار — EURUSD", callback_data=f"{mode}:EURUSD")],
-        [InlineKeyboardButton(text="↩️ رجوع", callback_data="home")],
-    ])
-
 class TelegramApp:
     def __init__(self, settings: Settings):
         self.s = settings
