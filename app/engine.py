@@ -72,8 +72,6 @@ class SignalEngine:
         selected_symbol: str | None = None,
         timeframe: str | None = None,
     ) -> str:
-        if self.db.daily_count() >= self.s.max_daily_trades:
-            return no_trade("تم بلوغ الحد الأقصى للإشارات اليومية.")
 
         tf = self._timeframes_for_scan(style, timeframe)
         if len(tf) < 3:
@@ -109,8 +107,11 @@ class SignalEngine:
                 if news.blocked:
                     continue
 
-                frames = await asyncio.gather(
-                    *(self.provider.candles(symbol, interval, 220) for interval in tf)
+                frames = await asyncio.wait_for(
+                    asyncio.gather(
+                        *(self.provider.candles(symbol, interval, 220) for interval in tf)
+                    ),
+                    timeout=12,
                 )
 
                 signal = analyze(
@@ -163,6 +164,8 @@ class SignalEngine:
                     "انتظر وصول السعر إلى منطقة الدخول، ثم سيتم تفعيلها."
                 )
 
+            except asyncio.TimeoutError:
+                log.error("scan timeout on %s", symbol)
             except Exception:
                 log.exception("scan error on %s", symbol)
 
