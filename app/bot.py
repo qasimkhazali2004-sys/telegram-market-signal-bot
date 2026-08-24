@@ -21,38 +21,40 @@ def keyboard():
 
 def asset_keyboard(mode: str):
     def timeframe_keyboard(mode: str, symbol: str):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text="1 دقيقة",
-                callback_data=f"{mode}_tf:{symbol}:1min",
-            ),
-            InlineKeyboardButton(
-                text="5 دقائق",
-                callback_data=f"{mode}_tf:{symbol}:5min",
-            ),
-            InlineKeyboardButton(
-                text="15 دقيقة",
-                callback_data=f"{mode}_tf:{symbol}:15min",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="1 ساعة",
-                callback_data=f"{mode}_tf:{symbol}:1h",
-            ),
-            InlineKeyboardButton(
-                text="4 ساعات",
-                callback_data=f"{mode}_tf:{symbol}:4h",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="↩️ رجوع",
-                callback_data="home",
-            )
-        ],
-    ])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="1 دقيقة",
+                    callback_data=f"{mode}_tf:{symbol}:1min",
+                ),
+                InlineKeyboardButton(
+                    text="5 دقائق",
+                    callback_data=f"{mode}_tf:{symbol}:5min",
+                ),
+                InlineKeyboardButton(
+                    text="15 دقيقة",
+                    callback_data=f"{mode}_tf:{symbol}:15min",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="1 ساعة",
+                    callback_data=f"{mode}_tf:{symbol}:1h",
+                ),
+                InlineKeyboardButton(
+                    text="4 ساعات",
+                    callback_data=f"{mode}_tf:{symbol}:4h",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="↩️ رجوع",
+                    callback_data="home",
+                ),
+            ],
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🥇 الذهب — XAUUSD", callback_data=f"{mode}:XAUUSD")],
         [InlineKeyboardButton(text="₿ بيتكوين — BTCUSDT", callback_data=f"{mode}:BTCUSDT")],
