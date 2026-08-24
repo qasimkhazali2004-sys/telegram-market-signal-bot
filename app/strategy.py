@@ -1,193 +1,185 @@
 from __future__ import annotations
+
 from datetime import datetime, timezone
 import hashlib
+
 from app.indicators import enrich, structure
 from app.models import TradeSignal, Direction, Style, MarketState
-from app.risk import make_stop, make_targets, rr, position_size
-from app.scoring import build_score
+from app.risk import position_size
 
-def _market_state(df, struct):
-    atr_val = float(df["atr"].iloc[-1])
-    close = float(df["close"].iloc[-1])
-    atr_pct = atr_val / close if close else 0.0
-    if atr_pct > 0.02:
-        return MarketState.HIGH_VOLATILITY
-    if atr_pct < 0.002:
-        return MarketState.LOW_VOLATILITY
-    if struct["bias"] == "BULLISH":
-        return MarketState.BULLISH
-    if struct["bias"] == "BEARISH":
-        return MarketState.BEARISH
-    return MarketState.NEUTRAL
 
-def analyze(
+def analyze_single(
     symbol: str,
-    htf,
-    mtf,
-    ltf,
+    candles,
     style: Style,
-    min_confidence: int,
     risk_pct: float,
     account_balance: float | None,
     value_per_price_unit: float | None,
-    spread_pct: float | None,
-    max_spread_pct: float,
-) -> TradeSignal | None:
-    if min(len(htf), len(mtf), len(ltf)) < 220:
-        return None
+) -> TradeSignal:
+    if len(candles) < 220:
+        raise ValueError("not enough candles")
 
-    h, m, l = enrich(htf), enrich(mtf), enrich(ltf)
-    hs, ms, ls = structure(h), structure(m), structure(l)
-    H, M, L = h.iloc[-1], m.iloc[-1], l.iloc[-1]
+    df = enrich(candles)
+    s = structure(df)
+    last = df.iloc[-1]
 
-    state = _market_state(h, hs)
+    close = float(last["close"])
+    atr = float(last["atr"])
+    if close <= 0 or atr <= 0:
+        raise ValueError("invalid market data")
 
-    # Primary trend model.
-    bull = (
-        H["ema20"] > H["ema50"] > H["ema200"]
-        and M["ema20"] > M["ema50"]
-    )
-    bear = (
-        H["ema20"] < H["ema50"] < H["ema200"]
-        and M["ema20"] < M["ema50"]
-    )
+    ema20 = float(last["ema20"])
+    ema50 = float(last["ema50"])
+    ema200 = float(last["ema200"])
+    rsi = float(last["rsi"])
+    macd_hist = float(last["macd_hist"])
+    vwap = float(last["vwap"]) if last["vwap"] == last["vwap"] else close
+    vol = float(last["volume"])
+    vol_ma = float(last["volume_ma20"]) if last["volume_ma20"] == last["volume_ma20"] else vol
 
-    # Fallback direction: use structure first, then EMA position on LTF.
-    if bull:
-        direction = Direction.BUY
-    elif bear:
-        direction = Direction.SELL
-    elif hs["bias"] == "BULLISH" or ms["bias"] == "BULLISH":
-        direction = Direction.BUY
-    elif hs["bias"] == "BEARISH" or ms["bias"] == "BEARISH":
-        direction = Direction.SELL
+    # Always choose the better directional side of the selected timeframe.
+    bull_points = 0
+    bear_points = 0
+
+    if ema20 >= ema50:
+        bull_points += 2
     else:
-        direction = (
-            Direction.BUY
-            if float(L["ema20"]) >= float(L["ema50"])
-            else Direction.SELL
+        bear_points += 2
+
+    if ema50 >= ema200:
+        bull_points += 2
+    else:
+        bear_points += 2
+
+    if rsi >= 50:
+        bull_points += 2
+    else:
+        bear_points += 2
+
+    if macd_hist >= 0:
+        bull_points += 2
+    else:
+        bear_points += 2
+
+    if close >= vwap:
+        bull_points += 1
+    else:
+        bear_points += 1
+
+    direction = Direction.BUY if bull_points >= bear_points else Direction.SELL
+
+    support = float(s["support"])
+    resistance = float(s["resistance"])
+
+    # Use current price as execution level, then build deterministic ATR targets.
+    entry = close
+    risk_distance = max(atr * 1.25, abs(entry - support) if direction == Direction.BUY else abs(resistance - entry))
+    risk_distance = max(risk_distance, atr * 0.80)
+
+    if direction == Direction.BUY:
+        stop = entry - risk_distance
+        tp1 = entry + risk_distance * 1.20
+        tp2 = entry + risk_distance * 2.00
+        tp3 = entry + risk_distance * 3.00
+    else:
+        stop = entry + risk_distance
+        tp1 = entry - risk_distance * 1.20
+        tp2 = entry - risk_distance * 2.00
+        tp3 = entry - risk_distance * 3.00
+
+    rr2 = 2.0
+
+    score = 50
+    score += min(15, abs(bull_points - bear_points) * 4)
+
+    if (direction == Direction.BUY and close >= vwap) or (direction == Direction.SELL and close <= vwap):
+        score += 8
+
+    if (direction == Direction.BUY and rsi >= 52) or (direction == Direction.SELL and rsi <= 48):
+        score += 8
+
+    if (direction == Direction.BUY and macd_hist >= 0) or (direction == Direction.SELL and macd_hist <= 0):
+        score += 7
+
+    if vol_ma > 0 and vol >= vol_ma * 0.85:
+        score += 5
+
+    confidence = max(55, min(98, int(score)))
+
+    if direction == Direction.BUY:
+        market_state = (
+            MarketState.STRONG_BULLISH
+            if ema20 > ema50 > ema200
+            else MarketState.BULLISH
+            if ema20 > ema50
+            else MarketState.NEUTRAL
+        )
+    else:
+        market_state = (
+            MarketState.STRONG_BEARISH
+            if ema20 < ema50 < ema200
+            else MarketState.BEARISH
+            if ema20 < ema50
+            else MarketState.NEUTRAL
         )
 
-    momentum_ok = (
-        (direction == Direction.BUY and L["rsi"] >= 50 and L["macd_hist"] >= 0)
-        or (direction == Direction.SELL and L["rsi"] <= 50 and L["macd_hist"] <= 0)
-    )
-
-    vol_ok = True if L["volume_ma20"] <= 0 else L["volume"] >= L["volume_ma20"] * 0.85
-    vwap_ok = True if L["vwap"] != L["vwap"] else (
-        (direction == Direction.BUY and L["close"] >= L["vwap"])
-        or (direction == Direction.SELL and L["close"] <= L["vwap"])
-    )
-    candle_ok = (
-        (direction == Direction.BUY and L["close"] >= L["open"])
-        or (direction == Direction.SELL and L["close"] <= L["open"])
-    )
-
-    entry = float(ls["support"] if direction == Direction.BUY else ls["resistance"])
-    atr_value = float(L["atr"])
-    if atr_value <= 0 or entry <= 0:
-        return None
-
-    structural_extreme = float(
-        ls["support"] if direction == Direction.BUY else ls["resistance"]
-    )
-    stop = make_stop(
-        entry,
-        atr_value,
-        ls["support"],
-        ls["resistance"],
-        direction.value,
-    )
-
-    sr_target = ls["resistance"] if direction == Direction.BUY else ls["support"]
-    tp1, tp2, tp3 = make_targets(
-        entry,
-        stop,
-        atr_value,
-        direction.value,
-        sr_target,
-    )
-    rr2 = rr(entry, stop, tp2, direction.value)
-
-    score = build_score({
-        "trend": 20 if (bull or bear) else 12,
-        "structure": 15 if (
-            (direction == Direction.BUY and hs["bias"] == "BULLISH")
-            or (direction == Direction.SELL and hs["bias"] == "BEARISH")
-        ) else 9,
-        "sr": 12 if abs(entry - structural_extreme) <= 1.5 * atr_value else 8,
-        "momentum": 10 if momentum_ok else 6,
-        "volume": 10 if vol_ok else 6,
-        "breakout_retest": 10 if (
-            (direction == Direction.BUY and (ms["breakout_up"] or entry >= ms["resistance"]))
-            or (direction == Direction.SELL and (ms["breakout_down"] or entry <= ms["support"]))
-        ) else 7,
-        "entry_confirmation": 10 if candle_ok and vwap_ok else 6 if candle_ok else 4,
-        "risk_reward": 10 if rr2 >= 2 else 7 if rr2 >= 1.5 else 5,
-    })
-
-    # Do not hard-stop on confidence. The caller asked for the best available
-    # setup instead of a repeated NO TRADE. Keep the real score visible.
-    expected = "5-30 دقيقة" if style == Style.SCALPING else "30 دقيقة - 4 ساعات"
-    timeframe = "15m / 5m / 1m" if style == Style.SCALPING else "1h / 15m / 5m"
-
-    market_state = (
-        MarketState.STRONG_BULLISH
-        if direction == Direction.BUY and hs["bias"] == "BULLISH"
-        else MarketState.STRONG_BEARISH
-        if direction == Direction.SELL and hs["bias"] == "BEARISH"
-        else state
-    )
-
     confirmations = [
-        "اتجاه الإطار الأعلى متوافق" if (
-            (direction == Direction.BUY and hs["bias"] == "BULLISH")
-            or (direction == Direction.SELL and hs["bias"] == "BEARISH")
-        ) else "أفضل اتجاه متاح من الهيكل",
-        "EMA 20 / 50 / 200",
-        "تأكيد RSI وMACD" if momentum_ok else "زخم متوسط",
-        "وقف الخسارة مبني على ATR والهيكل",
-        f"العائد مقابل المخاطرة: 1:{rr2:.2f}",
+        "تحليل الفريم المختار مباشرة",
+        "اتجاه EMA 20 / 50 / 200",
+        "RSI",
+        "MACD",
+        "ATR لإدارة الوقف والأهداف",
+        "أفضل اتجاه متاح حاليًا",
     ]
-    if vol_ok:
-        confirmations.append("الحجم متوافق مع متوسطه")
-    if vwap_ok:
-        confirmations.append("تأكيد VWAP")
-    if candle_ok:
-        confirmations.append("تأكيد شمعة الدخول")
-    if spread_pct is not None and spread_pct > max_spread_pct:
-        confirmations.append("تنبيه: السبريد أعلى من الحد المفضل")
-    if state == MarketState.HIGH_VOLATILITY:
-        confirmations.append("تنبيه: تذبذب مرتفع")
 
-    key = f"{symbol}:{direction.value}:{round(entry,6)}:{timeframe}:{score.total}"
+    if vol_ma > 0 and vol >= vol_ma * 0.85:
+        confirmations.append("الحجم متوافق مع المتوسط")
+
+    if vwap == vwap and (
+        (direction == Direction.BUY and close >= vwap)
+        or (direction == Direction.SELL and close <= vwap)
+    ):
+        confirmations.append("تأكيد VWAP")
+
+    timeframe_label = {
+        "1min": "1 دقيقة",
+        "5min": "5 دقائق",
+        "15min": "15 دقيقة",
+        "1h": "1 ساعة",
+        "4h": "4 ساعات",
+    }
+
+    # The caller stores the exact selected timeframe on the signal.
+    tf = getattr(candles, "timeframe", None) or "selected"
+
+    expected = "5-30 دقيقة" if style == Style.SCALPING else "30 دقيقة - 4 ساعات"
+    key = f"{symbol}:{direction.value}:{round(entry, 5)}:{tf}:{confidence}"
     setup_id = hashlib.sha256(key.encode()).hexdigest()[:20]
-    pos = position_size(
-        account_balance,
-        risk_pct,
-        entry,
-        stop,
-        value_per_price_unit,
-    )
 
     return TradeSignal(
         symbol=symbol,
         direction=direction,
         style=style,
-        timeframe=timeframe,
+        timeframe=tf,
         entry=entry,
         stop_loss=stop,
         tp1=tp1,
         tp2=tp2,
         tp3=tp3,
         rr=rr2,
-        confidence=score.total,
-        reason="أفضل فرصة متاحة حسب الاتجاه + الهيكل + الزخم + إدارة المخاطر",
+        confidence=confidence,
+        reason="أفضل فرصة متاحة على الفريم الذي اختاره المستخدم",
         confirmations=confirmations,
         market_state=market_state,
         expected_duration=expected,
         risk_pct=risk_pct,
         created_at=datetime.now(timezone.utc),
         setup_id=setup_id,
-        position_size=pos,
+        position_size=position_size(
+            account_balance,
+            risk_pct,
+            entry,
+            stop,
+            value_per_price_unit,
+        ),
     )
