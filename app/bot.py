@@ -173,7 +173,7 @@ class TelegramApp:
 )
 await q.answer()
 
-        @self.dp.callback_query(F.data == "home")
+@self.dp.callback_query(F.data == "home")
         async def home(q: CallbackQuery):
             await q.message.edit_text(
                 "اختر نوع التحليل:",
@@ -181,7 +181,7 @@ await q.answer()
             )
             await q.answer()
 
-        @self.dp.callback_query(F.data == "metrics")
+@self.dp.callback_query(F.data == "metrics")
         async def metrics(q: CallbackQuery):
             if q.from_user.id not in self.s.admin_ids:
                 await q.answer("هذا الخيار للمشرف فقط.", show_alert=True)
